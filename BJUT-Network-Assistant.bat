@@ -370,7 +370,7 @@ set /a ip_try=0
 
 set "ip="
 
-for /f "usebackq delims=" %%I in (\`powershell.exe -NoProfile -Command "$c=Get-NetIPConfiguration ^| Where-Object {$_.IPv4DefaultGateway -and $_.IPv4Address -and $_.NetAdapter.Status -eq 'Up' -and $_.NetAdapter.HardwareInterface} ^| Sort-Object {$_.NetIPv4Interface.InterfaceMetric} ^| Select-Object -First 1;if($c){$c.IPv4Address.IPAddress}"\`) do (
+for /f "usebackq delims=" %%I in (`powershell.exe -NoProfile -Command "$c=Get-NetIPConfiguration ^| Where-Object {$_.IPv4DefaultGateway -and $_.IPv4Address -and $_.NetAdapter.Status -eq 'Up' -and $_.NetAdapter.HardwareInterface} ^| Sort-Object {$_.NetIPv4Interface.InterfaceMetric} ^| Select-Object -First 1;if($c){$c.IPv4Address.IPAddress}"`) do (
     set "ip=%%I"
 )
 
@@ -461,7 +461,7 @@ REM ============================================================
 
 set "current_ssid="
 
-for /f "usebackq delims=" %%I in (\`powershell.exe -NoProfile -Command "$lines=netsh wlan show interfaces;foreach($line in $lines){$m=[regex]::Match($line,'^\s*SSID\s*:\s*(.+)$');if($m.Success){$m.Groups[1].Value.Trim();break}}"\`) do (
+for /f "usebackq delims=" %%I in (`powershell.exe -NoProfile -Command "$lines=netsh wlan show interfaces;foreach($line in $lines){$m=[regex]::Match($line,'^\s*SSID\s*:\s*(.+)$');if($m.Success){$m.Groups[1].Value.Trim();break}}"`) do (
     set "current_ssid=%%I"
 )
 
