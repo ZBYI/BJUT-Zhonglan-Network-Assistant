@@ -1,468 +1,585 @@
 @echo off
-chcp 65001 >nul
+chcp 65001 >nul 2>&1
 setlocal EnableExtensions
-title 北工大校园网助手
 cls
+title BJUT Network Assistant v3.2 Extreme
 
 REM ============================================================
-REM BJUT Network Assistant - v3.0.0
+REM USER CONFIG - only edit the next two lines
+REM Keep @campus after your account
 REM ============================================================
+set "BJUT_ACCOUNT=YOUR_ACCOUNT@campus"
+set "BJUT_PASSWORD=YOUR_PASSWORD"
+set "BJUT_SERVER=http://10.21.221.98:801/eportal/portal/login"
+set "BJUT_SELF=%~f0"
 
-REM USER CONFIG - ONLY EDIT THE NEXT TWO LINES
-REM Keep @campus after your account.
-set "account=YOUR_ACCOUNT@campus"
-set "password=YOUR_PASSWORD"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$f=[IO.File]::ReadAllText($env:BJUT_SELF,[Text.Encoding]::UTF8);$m='#<BJUT-'+'POWERSHELL>';$i=$f.IndexOf($m);if($i -lt 0){exit 90};& ([ScriptBlock]::Create($f.Substring($i+$m.Length)))"
+set "BJUT_RC=%errorlevel%"
+exit /b %BJUT_RC%
 
-REM Campus Portal
-set "server=http://10.21.221.98:801/eportal/portal/login"
+#<BJUT-POWERSHELL>
 
-echo ============================================================
-echo.
-echo                  北工大校园网助手
-echo                      v3.0.0
-echo.
-echo ============================================================
-echo.
+# ============================================================
+# BJUT Network Assistant v3.2.0 Extreme
+# 单 PowerShell 进程 + 高频条件检测 + Portal 返回值直读
+# ============================================================
 
-REM ============================================================
-REM 1. 检查必要组件
-REM ============================================================
+$Account = $env:BJUT_ACCOUNT
+$Password = $env:BJUT_PASSWORD
+$Server = $env:BJUT_SERVER
+$TargetPattern = '^CMCC-BJUT-SUSHE-H\d+-5G$'
+$InternetProbe = 'https://www.baidu.com/favicon.ico'
 
-where powershell.exe >nul 2>&1
-if errorlevel 1 (
-    echo [失败] 未找到 Windows PowerShell
-    echo.
-    pause
-    exit /b 1
-)
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+$OutputEncoding = [Console]::OutputEncoding
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$ErrorActionPreference = 'SilentlyContinue'
 
-where curl.exe >nul 2>&1
-if errorlevel 1 (
-    echo [失败] 未找到 curl.exe
-    echo.
-    pause
-    exit /b 1
-)
-
-REM ============================================================
-REM 2. 获取当前 Wi-Fi
-REM ============================================================
-
-call :GET_CURRENT_SSID
-
-set "previous_ssid=%current_ssid%"
-set "disconnected_non_target=0"
-
-if not defined current_ssid (
-    echo [信息] 当前未连接 Wi-Fi
-    echo [信息] 直接开始搜索校园 Wi-Fi
-    echo.
-    goto SCAN_WIFI
-)
-
-echo [当前] %current_ssid%
-
-REM ============================================================
-REM 3. 判断当前 Wi-Fi 是否属于目标校园网
-REM    格式：CMCC-BJUT-SUSHE-H数字-5G
-REM ============================================================
-
-set "CHECK_SSID=%current_ssid%"
-
-powershell.exe -NoProfile -Command ^
-    "if($env:CHECK_SSID -match '^CMCC-BJUT-SUSHE-H\d+-5G$'){exit 0}else{exit 1}" ^
-    >nul 2>&1
-
-if not errorlevel 1 (
-    echo [判断] 当前已经连接中蓝校园 Wi-Fi
-    echo [信息] 不主动断开当前连接
-    echo.
-) else (
-    echo [判断] 当前 Wi-Fi 不属于目标校园网
-    echo [切换] 正在断开当前 Wi-Fi...
-
-    netsh wlan disconnect >nul 2>&1
-
-    if errorlevel 1 (
-        echo [警告] Windows 未能正常执行 Wi-Fi 断开操作
-        echo [信息] 仍将继续搜索校园 Wi-Fi
-        echo.
-    ) else (
-        set "disconnected_non_target=1"
-        echo [成功] 已断开：%current_ssid%
-        echo.
-        timeout /t 2 /nobreak >nul
+function Write-Status {
+    param(
+        [string]$Tag,
+        [string]$Text,
+        [ConsoleColor]$TagColor = [ConsoleColor]::Cyan,
+        [ConsoleColor]$TextColor = [ConsoleColor]::Gray
     )
-)
 
-REM ============================================================
-REM 4. 扫描中蓝校园 Wi-Fi
-REM ============================================================
+    Write-Host ("[{0}] " -f $Tag) -NoNewline -ForegroundColor $TagColor
+    Write-Host $Text -ForegroundColor $TextColor
+}
 
-:SCAN_WIFI
+function Exit-Success {
+    param([string]$Message)
 
-echo [扫描] 正在搜索附近的中蓝校园 Wi-Fi...
-echo.
+    Write-Host
+    Write-Status '成功' $Message Green Green
+    Start-Sleep -Milliseconds 350
+    exit 0
+}
 
-set "best_ssid="
-set "best_signal="
-
-for /f "tokens=1-3 delims=|" %%A in ('powershell.exe -NoProfile -Command "$bestSsid='';$bestSignal=-1;$current='';foreach($line in (netsh wlan show networks mode=bssid)){$m=[regex]::Match($line,'^\s*SSID\s+\d+\s*:\s*(.+)$');if($m.Success){$current=$m.Groups[1].Value.Trim();continue};if([regex]::IsMatch($current,'^CMCC-BJUT-SUSHE-H\d+-5G$') -and $line.TrimEnd().EndsWith([char]37)){$s=[regex]::Match($line,':\s*(\d+)');if($s.Success){$v=[int]$s.Groups[1].Value;if($v -gt $bestSignal){$bestSignal=$v;$bestSsid=$current}}}};if($bestSignal -ge 0){Write-Output ('BEST|' + $bestSsid + '|' + $bestSignal)}"') do (
-    if /i "%%A"=="BEST" (
-        set "best_ssid=%%B"
-        set "best_signal=%%C"
+function Exit-Failure {
+    param(
+        [string]$Message,
+        [int]$Code = 1
     )
-)
 
-REM ============================================================
-REM 5. 没有找到符合规则的中蓝校园 Wi-Fi
-REM ============================================================
+    Write-Host
+    Write-Status '失败' $Message Red Red
+    Write-Host
+    Write-Host '按任意键关闭窗口...' -ForegroundColor DarkGray
+    [void][Console]::ReadKey($true)
+    exit $Code
+}
 
-if not defined best_ssid (
-    echo [信息] 未发现符合规则的中蓝校园 Wi-Fi
-    echo.
+function Get-CurrentSsid {
+    $lines = & netsh.exe wlan show interfaces 2>$null
 
-    if "%disconnected_non_target%"=="1" (
-        if defined previous_ssid (
-            echo [恢复] 正在尝试重新连接原 Wi-Fi：
-            echo        %previous_ssid%
-            echo.
+    foreach ($line in $lines) {
+        $m = [regex]::Match($line, '^\s*SSID\s*:\s*(.+)$')
+        if ($m.Success) {
+            return $m.Groups[1].Value.Trim()
+        }
+    }
 
-            netsh wlan connect ^
-                name="%previous_ssid%" ^
-                ssid="%previous_ssid%" >nul 2>&1
+    return $null
+}
 
-            if not errorlevel 1 (
-                echo [恢复] 已发送重新连接请求
-            ) else (
-                echo [警告] 无法自动恢复原 Wi-Fi
-            )
+function Test-TargetSsid {
+    param([string]$Ssid)
+
+    if ([string]::IsNullOrWhiteSpace($Ssid)) {
+        return $false
+    }
+
+    return [regex]::IsMatch($Ssid, $TargetPattern)
+}
+
+function Find-BestCampusWifi {
+    $map = @{}
+    $current = ''
+
+    $lines = & netsh.exe wlan show networks mode=bssid 2>$null
+
+    foreach ($line in $lines) {
+        $ssidMatch = [regex]::Match($line, '^\s*SSID\s+\d+\s*:\s*(.+)$')
+
+        if ($ssidMatch.Success) {
+            $current = $ssidMatch.Groups[1].Value.Trim()
+            continue
+        }
+
+        if (-not [regex]::IsMatch($current, $TargetPattern)) {
+            continue
+        }
+
+        $signalMatch = [regex]::Match($line, ':\s*(\d+)\s*%\s*$')
+
+        if ($signalMatch.Success) {
+            $signal = [int]$signalMatch.Groups[1].Value
+
+            if ((-not $map.ContainsKey($current)) -or ($signal -gt $map[$current])) {
+                $map[$current] = $signal
+            }
+        }
+    }
+
+    if ($map.Count -eq 0) {
+        return $null
+    }
+
+    $best = $map.GetEnumerator() |
+        Sort-Object Value -Descending |
+        Select-Object -First 1
+
+    return [pscustomobject]@{
+        Ssid   = [string]$best.Key
+        Signal = [int]$best.Value
+    }
+}
+
+function Get-WifiIPv4 {
+    try {
+        $interfaces = [Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces()
+
+        foreach ($nic in $interfaces) {
+            if ($nic.OperationalStatus -ne [Net.NetworkInformation.OperationalStatus]::Up) {
+                continue
+            }
+
+            if ($nic.NetworkInterfaceType -ne [Net.NetworkInformation.NetworkInterfaceType]::Wireless80211) {
+                continue
+            }
+
+            $props = $nic.GetIPProperties()
+
+            $gateway = $props.GatewayAddresses |
+                Where-Object {
+                    $_.Address.AddressFamily -eq [Net.Sockets.AddressFamily]::InterNetwork -and
+                    $_.Address.ToString() -ne '0.0.0.0'
+                } |
+                Select-Object -First 1
+
+            if (-not $gateway) {
+                continue
+            }
+
+            $addr = $props.UnicastAddresses |
+                Where-Object {
+                    $_.Address.AddressFamily -eq [Net.Sockets.AddressFamily]::InterNetwork -and
+                    -not $_.Address.ToString().StartsWith('169.254.')
+                } |
+                Select-Object -First 1
+
+            if ($addr) {
+                return $addr.Address.ToString()
+            }
+        }
+    }
+    catch {
+    }
+
+    return $null
+}
+
+function Test-Internet {
+    param([int]$TimeoutMs = 700)
+
+    $response = $null
+
+    try {
+        $request = [Net.HttpWebRequest]::Create($InternetProbe)
+        $request.Method = 'GET'
+        $request.Timeout = $TimeoutMs
+        $request.ReadWriteTimeout = $TimeoutMs
+        $request.AllowAutoRedirect = $true
+        $request.Proxy = $null
+        $request.KeepAlive = $false
+        $request.UserAgent = 'Mozilla/5.0'
+
+        $response = $request.GetResponse()
+        $code = [int]$response.StatusCode
+
+        return ($code -ge 200 -and $code -lt 400)
+    }
+    catch {
+        return $false
+    }
+    finally {
+        if ($response) {
+            try { $response.Close() } catch {}
+        }
+    }
+}
+
+function Ensure-WlanProfile {
+    param([string]$Ssid)
+
+    & netsh.exe wlan show profile name="$Ssid" *> $null
+    if ($LASTEXITCODE -eq 0) {
+        return $true
+    }
+
+    Write-Status '配置' '首次连接该开放 Wi-Fi，正在创建 WLAN 配置...' Yellow Yellow
+
+    $profileFile = Join-Path $env:TEMP ("BJUT_WLAN_{0}.xml" -f [guid]::NewGuid().ToString('N'))
+
+    $xml = @"
+<?xml version="1.0"?>
+<WLANProfile xmlns="http://www.microsoft.com/networking/WLAN/profile/v1">
+    <name>$Ssid</name>
+    <SSIDConfig>
+        <SSID>
+            <name>$Ssid</name>
+        </SSID>
+        <nonBroadcast>false</nonBroadcast>
+    </SSIDConfig>
+    <connectionType>ESS</connectionType>
+    <connectionMode>manual</connectionMode>
+    <MSM>
+        <security>
+            <authEncryption>
+                <authentication>open</authentication>
+                <encryption>none</encryption>
+                <useOneX>false</useOneX>
+            </authEncryption>
+        </security>
+    </MSM>
+</WLANProfile>
+"@
+
+    try {
+        [IO.File]::WriteAllText(
+            $profileFile,
+            $xml,
+            (New-Object System.Text.UTF8Encoding($false))
         )
 
-        echo.
-        pause
-        exit /b
+        & netsh.exe wlan add profile filename="$profileFile" user=current *> $null
+        $code = $LASTEXITCODE
+    }
+    catch {
+        $code = 1
+    }
+    finally {
+        Remove-Item -LiteralPath $profileFile -Force -ErrorAction SilentlyContinue
+    }
+
+    if ($code -eq 0) {
+        Write-Status '配置' 'WLAN 配置创建成功' Green Green
+        return $true
+    }
+
+    return $false
+}
+
+function Add-QueryValue {
+    param(
+        [System.Collections.Generic.List[string]]$List,
+        [string]$Key,
+        [string]$Value
     )
 
-    echo [信息] 保持当前网络连接
-    echo.
-    goto PORTAL_START
-)
-
-REM ============================================================
-REM 6. 显示信号最强的校园 Wi-Fi
-REM ============================================================
-
-echo [选择] 信号最强的校园 Wi-Fi：
-echo.
-echo        %best_ssid%
-echo        信号强度：%best_signal%%%
-echo.
-
-REM ============================================================
-REM 7. 再次读取当前连接的 Wi-Fi
-REM ============================================================
-
-call :GET_CURRENT_SSID
-
-if defined current_ssid (
-    echo [信息] 当前 Wi-Fi：%current_ssid%
-) else (
-    echo [信息] 当前未连接 Wi-Fi
-)
-
-echo.
-
-REM ============================================================
-REM 8. 如果当前已经是最强校园 Wi-Fi，则不重复切换
-REM ============================================================
-
-if /i "%current_ssid%"=="%best_ssid%" (
-    echo [信息] 当前已经连接信号最强的校园 Wi-Fi
-    echo.
-    goto WAIT_NETWORK
-)
-
-REM ============================================================
-REM 9. 检查 Windows 是否已有该 Wi-Fi 配置
-REM ============================================================
-
-echo [连接] 准备连接：
-echo        %best_ssid%
-echo.
-
-netsh wlan show profile name="%best_ssid%" >nul 2>&1
-
-if not errorlevel 1 (
-    goto CONNECT_WIFI
-)
-
-REM ============================================================
-REM 10. 首次连接开放校园 Wi-Fi，自动创建 WLAN Profile
-REM ============================================================
-
-echo [配置] 首次连接该 Wi-Fi，正在创建网络配置...
-
-set "profileFile=%TEMP%\BJUT_WLAN_%RANDOM%_%RANDOM%.xml"
-
-> "%profileFile%" (
-    echo ^<?xml version="1.0"?^>
-    echo ^<WLANProfile xmlns="http://www.microsoft.com/networking/WLAN/profile/v1"^>
-    echo ^<name^>%best_ssid%^</name^>
-    echo ^<SSIDConfig^>
-    echo ^<SSID^>
-    echo ^<name^>%best_ssid%^</name^>
-    echo ^</SSID^>
-    echo ^<nonBroadcast^>false^</nonBroadcast^>
-    echo ^</SSIDConfig^>
-    echo ^<connectionType^>ESS^</connectionType^>
-    echo ^<connectionMode^>manual^</connectionMode^>
-    echo ^<MSM^>
-    echo ^<security^>
-    echo ^<authEncryption^>
-    echo ^<authentication^>open^</authentication^>
-    echo ^<encryption^>none^</encryption^>
-    echo ^<useOneX^>false^</useOneX^>
-    echo ^</authEncryption^>
-    echo ^</security^>
-    echo ^</MSM^>
-    echo ^</WLANProfile^>
-)
-
-netsh wlan add profile ^
-    filename="%profileFile%" ^
-    user=current >nul 2>&1
-
-if errorlevel 1 (
-    del /q "%profileFile%" >nul 2>&1
-    echo [失败] Wi-Fi 配置创建失败
-    echo.
-    pause
-    exit /b 1
-)
-
-del /q "%profileFile%" >nul 2>&1
-
-echo [配置] Wi-Fi 配置创建成功
-echo.
+    $escaped = [Uri]::EscapeDataString([string]$Value)
+    $List.Add(("{0}={1}" -f $Key, $escaped))
+}
+
+function Invoke-PortalLogin {
+    param(
+        [string]$Ip
+    )
+
+    $parts = New-Object 'System.Collections.Generic.List[string]'
+
+    Add-QueryValue $parts 'callback' 'dr1003'
+    Add-QueryValue $parts 'login_method' '1'
+    Add-QueryValue $parts 'user_account' $Account
+    Add-QueryValue $parts 'user_password' $Password
+    Add-QueryValue $parts 'wlan_user_ip' $Ip
+    Add-QueryValue $parts 'wlan_user_ipv6' ''
+    Add-QueryValue $parts 'wlan_user_mac' '000000000000'
+    Add-QueryValue $parts 'wlan_ac_ip' ''
+    Add-QueryValue $parts 'wlan_ac_name' ''
+    Add-QueryValue $parts 'jsVersion' '4.2.1'
+    Add-QueryValue $parts 'terminal_type' '1'
+    Add-QueryValue $parts 'lang' 'zh-cn'
+    Add-QueryValue $parts 'v' '7103'
+    Add-QueryValue $parts 'lang' 'zh'
+
+    $url = $Server + '?' + ($parts -join '&')
+
+    $response = $null
+    $reader = $null
+
+    try {
+        $request = [Net.HttpWebRequest]::Create($url)
+        $request.Method = 'GET'
+        $request.Timeout = 2500
+        $request.ReadWriteTimeout = 2500
+        $request.Proxy = $null
+        $request.KeepAlive = $false
+        $request.UserAgent = 'Mozilla/5.0'
+
+        $response = $request.GetResponse()
+        $reader = New-Object IO.StreamReader(
+            $response.GetResponseStream(),
+            [Text.Encoding]::UTF8
+        )
+
+        $text = $reader.ReadToEnd()
+
+        $result = $null
+        $message = $null
+
+        $first = $text.IndexOf('{')
+        $last = $text.LastIndexOf('}')
+
+        if ($first -ge 0 -and $last -gt $first) {
+            try {
+                $json = $text.Substring($first, $last - $first + 1) | ConvertFrom-Json
+                $result = [int]$json.result
+                $message = [string]$json.msg
+            }
+            catch {
+            }
+        }
+
+        return [pscustomobject]@{
+            TransportOk = $true
+            Success     = ($result -eq 1)
+            Result      = $result
+            Message     = $message
+            Raw         = $text
+        }
+    }
+    catch {
+        return [pscustomobject]@{
+            TransportOk = $false
+            Success     = $false
+            Result      = $null
+            Message     = $_.Exception.Message
+            Raw         = ''
+        }
+    }
+    finally {
+        if ($reader) {
+            try { $reader.Close() } catch {}
+        }
+
+        if ($response) {
+            try { $response.Close() } catch {}
+        }
+    }
+}
+
+Clear-Host
+
+Write-Host '============================================================' -ForegroundColor DarkCyan
+Write-Host
+Write-Host '                 北工大校园网助手' -ForegroundColor White
+Write-Host '                 v3.2.0 EXTREME' -ForegroundColor Cyan
+Write-Host
+Write-Host '============================================================' -ForegroundColor DarkCyan
+Write-Host
+
+if ($Account -eq 'YOUR_ACCOUNT@campus' -or [string]::IsNullOrWhiteSpace($Account)) {
+    Exit-Failure '请先修改 BAT 顶部的校园网账号。'
+}
+
+if (-not $Account.EndsWith('@campus', [StringComparison]::OrdinalIgnoreCase)) {
+    Exit-Failure '账号格式错误：账号末尾必须保留 @campus。'
+}
+
+if ($Password -eq 'YOUR_PASSWORD' -or [string]::IsNullOrWhiteSpace($Password)) {
+    Exit-Failure '请先修改 BAT 顶部的校园网密码。'
+}
+
+$current = Get-CurrentSsid
+$previous = $current
+$disconnectedNonTarget = $false
+
+if ([string]::IsNullOrWhiteSpace($current)) {
+    Write-Status '信息' '当前未连接 Wi-Fi'
+}
+else {
+    Write-Status '当前' $current Cyan White
+
+    if (Test-TargetSsid $current) {
+        Write-Status '判断' '当前已连接中蓝 5G 校园 Wi-Fi，不主动断开' Green Green
+    }
+    else {
+        Write-Status '切换' '当前不是目标校园 Wi-Fi，立即断开...' Yellow Yellow
+
+        & netsh.exe wlan disconnect *> $null
+        $disconnectCode = $LASTEXITCODE
+
+        if ($disconnectCode -eq 0) {
+            $disconnectedNonTarget = $true
+            Write-Status '成功' ("已断开：{0}" -f $current) Green Green
+        }
+        else {
+            Write-Status '警告' 'Windows 未确认断开成功，继续执行扫描' Yellow Yellow
+        }
+    }
+}
+
+Write-Status '扫描' '正在搜索中蓝 5G 校园 Wi-Fi...' Cyan Cyan
+
+$best = $null
+
+for ($scanTry = 0; $scanTry -lt 3; $scanTry++) {
+    $best = Find-BestCampusWifi
+
+    if ($best) {
+        break
+    }
+
+    if ($scanTry -lt 2) {
+        Start-Sleep -Milliseconds 120
+    }
+}
 
-REM ============================================================
-REM 11. 连接信号最强的校园 Wi-Fi
-REM ============================================================
+if (-not $best) {
+    if ($disconnectedNonTarget -and -not [string]::IsNullOrWhiteSpace($previous)) {
+        Write-Status '恢复' ("未发现目标校园 Wi-Fi，尝试重新连接：{0}" -f $previous) Yellow Yellow
 
-:CONNECT_WIFI
+        & netsh.exe wlan connect name="$previous" ssid="$previous" *> $null
 
-echo [连接] 正在连接：
-echo        %best_ssid%
+        if ($LASTEXITCODE -eq 0) {
+            Write-Status '恢复' '已发送重新连接请求' Green Green
+        }
+        else {
+            Write-Status '警告' '无法自动恢复原 Wi-Fi' Yellow Yellow
+        }
 
-netsh wlan connect ^
-    name="%best_ssid%" ^
-    ssid="%best_ssid%" >nul 2>&1
+        Exit-Failure '附近没有发现符合规则的中蓝 5G 校园 Wi-Fi。' 2
+    }
 
-if errorlevel 1 (
-    echo.
-    echo [失败] Windows 无法发起 Wi-Fi 连接
-    echo.
-    pause
-    exit /b 1
-)
+    if (Test-TargetSsid $current) {
+        Write-Status '信息' '扫描暂未返回候选，继续使用当前校园 Wi-Fi' Yellow Yellow
+        $best = [pscustomobject]@{
+            Ssid   = $current
+            Signal = -1
+        }
+    }
+    else {
+        Exit-Failure '附近没有发现符合规则的中蓝 5G 校园 Wi-Fi。' 2
+    }
+}
 
-REM ============================================================
-REM 12. 等待 Wi-Fi 切换完成，最多等待 15 秒
-REM ============================================================
+Write-Status '选择' $best.Ssid Green Yellow
 
-set /a wifi_try=0
+if ($best.Signal -ge 0) {
+    Write-Status '信号' ("{0}%" -f $best.Signal) Green Yellow
+}
 
-:WAIT_WIFI
+$current = Get-CurrentSsid
 
-timeout /t 1 /nobreak >nul
+if ($current -ne $best.Ssid) {
+    if (-not (Ensure-WlanProfile $best.Ssid)) {
+        Exit-Failure '无法创建目标 Wi-Fi 的 Windows WLAN 配置。'
+    }
 
-call :GET_CURRENT_SSID
-
-if /i "%current_ssid%"=="%best_ssid%" (
-    goto WIFI_CONNECTED
-)
-
-set /a wifi_try+=1
-
-if %wifi_try% GEQ 15 (
-    echo.
-    echo [失败] Wi-Fi 连接超时
-    echo [目标] %best_ssid%
-    echo [当前] %current_ssid%
-    echo.
-    pause
-    exit /b 1
-)
-
-goto WAIT_WIFI
-
-REM ============================================================
-REM 13. Wi-Fi 已连接
-REM ============================================================
-
-:WIFI_CONNECTED
-
-echo.
-echo [成功] Wi-Fi 已连接
-echo [信息] %best_ssid%
-echo.
-
-REM ============================================================
-REM 14. 等待 DHCP 和网络初始化
-REM ============================================================
-
-:WAIT_NETWORK
-
-echo [等待] 正在初始化网络...
-timeout /t 3 /nobreak >nul
-
-REM ============================================================
-REM 15. 开始 Portal 登录流程
-REM ============================================================
-
-:PORTAL_START
-
-echo [检测] 正在检查 Internet...
-
-curl.exe -fsS ^
-    --connect-timeout 3 ^
-    --max-time 6 ^
-    "https://www.baidu.com/favicon.ico" ^
-    -o NUL >nul 2>&1
-
-if not errorlevel 1 (
-    echo [成功] 当前已经可以正常访问 Internet
-    echo.
-    echo 窗口将在 3 秒后关闭...
-    timeout /t 3 /nobreak >nul
-    exit /b
-)
-
-REM ============================================================
-REM 16. 检查校园网认证服务器
-REM ============================================================
-
-echo [检测] 正在检测校园网认证服务...
-
-curl.exe -sS ^
-    --connect-timeout 2 ^
-    --max-time 4 ^
-    "%server%" ^
-    -o NUL >nul 2>&1
-
-if errorlevel 1 (
-    echo [失败] 当前无法连接校园网认证服务器
-    echo.
-    pause
-    exit /b 1
-)
-
-REM ============================================================
-REM 17. 获取当前 IPv4
-REM ============================================================
-
-echo [检测] 正在获取当前 IPv4...
-
-set /a ip_try=0
-
-:GET_IP
-
-set "ip="
-
-for /f "usebackq delims=" %%I in (`powershell.exe -NoProfile -Command "$c=Get-NetIPConfiguration ^| Where-Object {$_.IPv4DefaultGateway -and $_.IPv4Address -and $_.NetAdapter.Status -eq 'Up' -and $_.NetAdapter.HardwareInterface} ^| Sort-Object {$_.NetIPv4Interface.InterfaceMetric} ^| Select-Object -First 1;if($c){$c.IPv4Address.IPAddress}"`) do (
-    set "ip=%%I"
-)
-
-if defined ip (
-    goto IP_READY
-)
-
-set /a ip_try+=1
-
-if %ip_try% GEQ 10 (
-    echo [失败] 未获取到有效 IPv4 地址
-    echo.
-    pause
-    exit /b 1
-)
-
-timeout /t 1 /nobreak >nul
-goto GET_IP
-
-REM ============================================================
-REM 18. IPv4 获取成功
-REM ============================================================
-
-:IP_READY
-
-echo [信息] 当前 IPv4：%ip%
-echo [认证] 正在登录校园网...
-
-REM ============================================================
-REM 19. 提交校园网 Portal 登录
-REM ============================================================
-
-curl.exe -sS -G "%server%" ^
-    --connect-timeout 5 ^
-    --max-time 10 ^
-    --data-urlencode "callback=dr1003" ^
-    --data-urlencode "login_method=1" ^
-    --data-urlencode "user_account=%account%" ^
-    --data-urlencode "user_password=%password%" ^
-    --data-urlencode "wlan_user_ip=%ip%" ^
-    --data-urlencode "wlan_user_ipv6=" ^
-    --data-urlencode "wlan_user_mac=000000000000" ^
-    --data-urlencode "wlan_ac_ip=" ^
-    --data-urlencode "wlan_ac_name=" ^
-    --data-urlencode "jsVersion=4.2.1" ^
-    --data-urlencode "terminal_type=1" ^
-    --data-urlencode "lang=zh-cn" ^
-    --data-urlencode "v=7103" ^
-    --data-urlencode "lang=zh" ^
-    -o NUL >nul 2>&1
-
-REM ============================================================
-REM 20. 等待认证生效
-REM ============================================================
-
-timeout /t 3 /nobreak >nul
-
-REM ============================================================
-REM 21. 验证最终联网结果
-REM ============================================================
-
-echo [检测] 正在验证网络连接...
-
-curl.exe -fsS ^
-    --connect-timeout 3 ^
-    --max-time 8 ^
-    "https://www.baidu.com/favicon.ico" ^
-    -o NUL >nul 2>&1
-
-if not errorlevel 1 (
-    echo.
-    echo [成功] 校园网认证成功，网络已连接
-) else (
-    echo.
-    echo [失败] 校园网认证未成功
-)
-
-echo.
-echo 窗口将在 5 秒后关闭...
-timeout /t 5 /nobreak >nul
-exit /b
-
-REM ============================================================
-REM 子程序：获取当前连接的 Wi-Fi SSID
-REM ============================================================
-
-:GET_CURRENT_SSID
-
-set "current_ssid="
-
-for /f "usebackq delims=" %%I in (`powershell.exe -NoProfile -Command "$lines=netsh wlan show interfaces;foreach($line in $lines){$m=[regex]::Match($line,'^\s*SSID\s*:\s*(.+)$');if($m.Success){$m.Groups[1].Value.Trim();break}}"`) do (
-    set "current_ssid=%%I"
-)
-
-exit /b
+    Write-Status '连接' ("正在连接：{0}" -f $best.Ssid) Cyan White
+
+    & netsh.exe wlan connect name="$($best.Ssid)" ssid="$($best.Ssid)" *> $null
+    $connectCode = $LASTEXITCODE
+
+    if ($connectCode -ne 0) {
+        Exit-Failure 'Windows 无法发起 Wi-Fi 连接。'
+    }
+
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    $connected = $false
+
+    do {
+        $nowSsid = Get-CurrentSsid
+
+        if ($nowSsid -eq $best.Ssid) {
+            $connected = $true
+            break
+        }
+
+        Start-Sleep -Milliseconds 120
+    }
+    while ($watch.ElapsedMilliseconds -lt 6500)
+
+    if (-not $connected) {
+        Exit-Failure ("Wi-Fi 连接超时。目标：{0}" -f $best.Ssid)
+    }
+
+    Write-Status '成功' 'Wi-Fi 已连接' Green Green
+}
+else {
+    Write-Status '信息' '当前已经是信号最强的目标校园 Wi-Fi' Green Green
+}
+
+Write-Status '检测' '正在获取当前 IPv4...' Cyan Gray
+
+$ipWatch = [Diagnostics.Stopwatch]::StartNew()
+$ip = $null
+
+do {
+    $ip = Get-WifiIPv4
+
+    if ($ip) {
+        break
+    }
+
+    Start-Sleep -Milliseconds 100
+}
+while ($ipWatch.ElapsedMilliseconds -lt 7000)
+
+if (-not $ip) {
+    Exit-Failure '未获取到有效的 Wi-Fi IPv4 地址。'
+}
+
+Write-Status 'IPv4' $ip Cyan White
+
+Write-Status '检测' '正在极速检查 Internet...' Cyan Gray
+
+if (Test-Internet 700) {
+    Exit-Success '当前已经可以正常访问 Internet'
+}
+
+Write-Status '认证' '正在登录校园网...' Magenta Magenta
+
+$portal = Invoke-PortalLogin $ip
+
+if (-not $portal.TransportOk) {
+    Exit-Failure '无法连接校园网认证服务器。'
+}
+
+if ($portal.Success) {
+    Write-Status '认证' 'Portal 已返回认证成功' Green Green
+}
+else {
+    if (Test-Internet 700) {
+        Exit-Success '当前已经可以正常访问 Internet'
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($portal.Message)) {
+        Write-Status '原因' $portal.Message Red Red
+        Exit-Failure 'Portal 未通过认证。'
+    }
+
+    Exit-Failure 'Portal 未返回认证成功结果。'
+}
+
+$verifyWatch = [Diagnostics.Stopwatch]::StartNew()
+
+do {
+    if (Test-Internet 700) {
+        Exit-Success '校园网认证成功，网络已连接'
+    }
+
+    Start-Sleep -Milliseconds 120
+}
+while ($verifyWatch.ElapsedMilliseconds -lt 4500)
+
+Write-Host
+Write-Status '认证' 'Portal 已明确返回成功' Green Green
+Write-Status '提示' 'Internet 探测暂未通过，Windows 网络状态可能仍在刷新。' Yellow Yellow
+Write-Status '提示' '可直接打开浏览器测试网页；实际网络可能已经可用。' Yellow Yellow
+Write-Host
+Write-Host '按任意键关闭窗口...' -ForegroundColor DarkGray
+[void][Console]::ReadKey($true)
+exit 0
